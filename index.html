@@ -142,7 +142,7 @@
   <div class="logo">Expense <span>Tracker</span></div>
   <div class="card">
     <label for="li-email">Email</label>
-    <input id="li-email" type="email" autocomplete="username" value="riccardo.ratto01@gmail.com">
+    <input id="li-email" type="email" autocomplete="username" value="">
     <label for="li-pw">Password</label>
     <input id="li-pw" type="password" autocomplete="current-password">
     <button class="btn" id="li-btn">Sign in</button>
@@ -230,12 +230,14 @@ function setSession(session) {
 $("#li-btn").addEventListener("click", async () => {
   $("#li-err").textContent = "";
   $("#li-btn").disabled = true;
-  const { error } = await sb.auth.signInWithPassword({
-    email: $("#li-email").value.trim(), password: $("#li-pw").value,
-  });
+  const email = $("#li-email").value.trim();
+  const { error } = await sb.auth.signInWithPassword({ email, password: $("#li-pw").value });
   $("#li-btn").disabled = false;
   if (error) $("#li-err").textContent = error.message;
+  else localStorage.setItem("et_email", email); /* remembered on this device only */
 });
+/* prefill from this device's history, never hardcoded in public code */
+$("#li-email").value = localStorage.getItem("et_email") || "";
 $("#li-pw").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#li-btn").click(); });
 $("#btn-logout").addEventListener("click", () => sb.auth.signOut());
 $("#btn-refresh").addEventListener("click", () => { loadAll(); toast("Refreshing..."); });
