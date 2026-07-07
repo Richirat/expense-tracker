@@ -1,0 +1,18 @@
+# Secrets, never commit. The sb_secret_ key lives only in .env.local.
+.env
+.env.*
+*.secret
+
+# Privacy: personal figures and backend internals stay out of the public repo.
+# The deployed site needs only index.html.
+data/
+supabase/
+
+# Dependencies and build output
+node_modules/
+dist/
+build/
+
+# OS noise
+.DS_Store
+Thumbs.db

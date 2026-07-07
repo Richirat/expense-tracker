@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Expense Tracker</title>
+<!--
+  Security note: this file is deployed publicly. It contains ONLY the
+  publishable key, which grants zero data access without login (verified:
+  anon role has no grants and no policies). The secret key lives in
+  .env.local, which is gitignored and never deployed.
+-->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5/papaparse.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #1a2130; --panel2: #222b3d; --line: #2c3750;
+    --text: #e8ecf4; --muted: #8b96ab; --accent: #4fd1c5; --accent-dim: #2c7a73;
+    --ok: #4fd18b; --warn: #e8c35a; --over: #ef6a6a; --income: #6aa9ef;
+    font-size: 16px;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    min-height: 100vh; padding-bottom: 70px;
+  }
+  .num { font-variant-numeric: tabular-nums; }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px; border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; background: var(--bg); z-index: 5;
+  }
+  header h1 { font-size: 1.05rem; font-weight: 600; letter-spacing: .3px; }
+  header h1 span { color: var(--accent); }
+  .hbtns { display: flex; gap: 8px; }
+  .ghost {
+    background: none; border: 1px solid var(--line); color: var(--muted);
+    border-radius: 8px; padding: 6px 10px; font-size: .8rem; cursor: pointer;
+  }
+  .ghost:hover { color: var(--text); border-color: var(--accent-dim); }
+  main { max-width: 640px; margin: 0 auto; padding: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 14px 16px; margin-bottom: 12px;
+  }
+  .card h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 10px; }
+  nav {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 5;
+    display: flex; background: var(--panel); border-top: 1px solid var(--line);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  nav button {
+    flex: 1; background: none; border: none; color: var(--muted);
+    padding: 12px 4px 10px; font-size: .72rem; cursor: pointer;
+  }
+  nav button .ico { display: block; font-size: 1.15rem; margin-bottom: 2px; }
+  nav button.active { color: var(--accent); }
+  .view { display: none; } .view.active { display: block; }
+  /* rows and bars */
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); gap: 8px; }
+  .row:last-child { border-bottom: none; }
+  .row .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sub { color: var(--muted); font-size: .78rem; }
+  .delta-up { color: var(--over); font-size: .75rem; }
+  .delta-down { color: var(--ok); font-size: .75rem; }
+  .bar { height: 6px; border-radius: 3px; background: var(--panel2); overflow: hidden; margin-top: 6px; }
+  .bar > i { display: block; height: 100%; border-radius: 3px; }
+  .ok    .bar > i { background: var(--ok); }
+  .warn  .bar > i { background: var(--warn); }
+  .over  .bar > i { background: var(--over); }
+  .state { font-size: .72rem; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+  .ok   .state { background: rgba(79,209,139,.12); color: var(--ok); }
+  .warn .state { background: rgba(232,195,90,.12); color: var(--warn); }
+  .over .state { background: rgba(239,106,106,.18); color: var(--over); font-weight: 700; }
+  .neg { color: var(--over); } .pos { color: var(--ok); } .inc { color: var(--income); }
+  /* forms */
+  label { display: block; font-size: .78rem; color: var(--muted); margin: 10px 0 4px; }
+  input, select, textarea {
+    width: 100%; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px; font-size: 1rem;
+  }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent-dim); }
+  .btn {
+    width: 100%; background: var(--accent); color: #07211e; font-weight: 700;
+    border: none; border-radius: 10px; padding: 12px; font-size: 1rem; cursor: pointer; margin-top: 14px;
+  }
+  .btn:disabled { opacity: .5; }
+  .btn.secondary { background: var(--panel2); color: var(--text); border: 1px solid var(--line); }
+  .seg { display: flex; gap: 8px; }
+  .seg button {
+    flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel2); color: var(--muted); cursor: pointer; font-size: .95rem;
+  }
+  .seg button.sel-spend { background: rgba(239,106,106,.15); color: var(--over); border-color: var(--over); }
+  .seg button.sel-income { background: rgba(106,169,239,.15); color: var(--income); border-color: var(--income); }
+  .seg button.sel-plain { background: rgba(79,209,197,.12); color: var(--accent); border-color: var(--accent-dim); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  /* login */
+  #login { max-width: 360px; margin: 12vh auto 0; padding: 0 20px; }
+  #login .logo { text-align: center; font-size: 1.4rem; font-weight: 700; margin-bottom: 24px; }
+  #login .logo span { color: var(--accent); }
+  .err { color: var(--over); font-size: .85rem; margin-top: 10px; min-height: 1.2em; }
+  /* tables (import preview) */
+  .tbl { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  .tbl th, .tbl td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  .tbl th { color: var(--muted); font-weight: 500; }
+  .tbl select { padding: 4px; font-size: .8rem; width: auto; max-width: 130px; }
+  .dupe { color: var(--warn); font-size: .7rem; }
+  .scrollx { overflow-x: auto; }
+  #toast {
+    position: fixed; left: 50%; transform: translateX(-50%); bottom: 84px; z-index: 20;
+    background: var(--panel2); border: 1px solid var(--accent-dim); color: var(--text);
+    padding: 10px 18px; border-radius: 10px; font-size: .9rem; display: none; max-width: 90vw;
+  }
+  .muted { color: var(--muted); }
+  .small { font-size: .8rem; }
+  .totline { display: flex; justify-content: space-between; font-size: 1.05rem; padding: 4px 0; }
+  /* Appearance: light mode and accent palettes, set from the Theme tab */
+  html[data-mode="light"] {
+    --bg: #f2f4f8; --panel: #ffffff; --panel2: #e9edf3; --line: #d5dbe6;
+    --text: #1d2433; --muted: #5c6a82; --ok: #178a52; --warn: #9c7a00;
+    --over: #cf4242; --income: #2f6fc2;
+  }
+  html[data-palette="ocean"]  { --accent: #5aa7f0; --accent-dim: #2e6398; }
+  html[data-palette="violet"] { --accent: #a78bfa; --accent-dim: #6d55b8; }
+  html[data-palette="ember"]  { --accent: #f09d52; --accent-dim: #a06527; }
+  .swatch {
+    display: flex; align-items: center; gap: 10px; padding: 10px; width: 100%;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--panel2);
+    color: var(--text); font-size: .95rem; cursor: pointer; margin-top: 8px;
+  }
+  .swatch i { width: 22px; height: 22px; border-radius: 50%; display: inline-block; }
+  .swatch.sel { border-color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <div class="logo">Expense <span>Tracker</span></div>
+  <div class="card">
+    <label for="li-email">Email</label>
+    <input id="li-email" type="email" autocomplete="username" value="riccardo.ratto01@gmail.com">
+    <label for="li-pw">Password</label>
+    <input id="li-pw" type="password" autocomplete="current-password">
+    <button class="btn" id="li-btn">Sign in</button>
+    <div class="err" id="li-err"></div>
+  </div>
+</div>
+
+<div id="app" style="display:none">
+  <header>
+    <h1>Expense <span>Tracker</span></h1>
+    <div class="hbtns">
+      <button class="ghost" id="btn-refresh" title="Reload data">Refresh</button>
+      <button class="ghost" id="btn-logout">Sign out</button>
+    </div>
+  </header>
+  <main>
+    <div id="view-overview" class="view active"></div>
+    <div id="view-budget" class="view"></div>
+    <div id="view-forecast" class="view"></div>
+    <div id="view-insights" class="view"></div>
+    <div id="view-add" class="view"></div>
+    <div id="view-import" class="view"></div>
+    <div id="view-theme" class="view"></div>
+  </main>
+  <nav>
+    <button data-v="overview" class="active"><span class="ico">◫</span>Overview</button>
+    <button data-v="budget"><span class="ico">◔</span>Budget</button>
+    <button data-v="forecast"><span class="ico">↝</span>Forecast</button>
+    <button data-v="insights"><span class="ico">✦</span>Insights</button>
+    <button data-v="add"><span class="ico">＋</span>Add</button>
+    <button data-v="import"><span class="ico">⇪</span>Import</button>
+    <button data-v="theme"><span class="ico">◐</span>Theme</button>
+  </nav>
+</div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+/* ================= Config (publishable values only, safe to deploy) ============== */
+const SUPABASE_URL = "https://pbfeezpmnnkfxmpnpkrr.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_tVKmEbXqhVgFCQGMXV-RJA_jq5naQCb";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+
+/* ================= State ================= */
+const S = { session: null, categories: [], tx: [], bills: [], budgets: [], income: [] };
+
+/* ================= Helpers ================= */
+const $ = (q) => document.querySelector(q);
+const GBP = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
+const fmt = (n) => GBP.format(n);
+const pad2 = (n) => String(n).padStart(2, "0");
+const toISO = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const todayISO = () => toISO(new Date());
+const monthOf = (iso) => iso.slice(0, 7);
+const addDays = (iso, n) => { const d = new Date(iso + "T12:00:00"); d.setDate(d.getDate() + n); return toISO(d); };
+const daysInMonth = (y, m) => new Date(y, m, 0).getDate(); /* m is 1..12 */
+const catLabel = (id) => (S.categories.find((c) => c.id === id) || { label: id }).label;
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function lastWorkingDay(y, m) { /* m 1..12; steps back from month end over Sat and Sun; UK bank holidays not considered */
+  let d = new Date(y, m - 1, daysInMonth(y, m), 12);
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1);
+  return toISO(d);
+}
+function toast(msg, ms = 2600) {
+  const t = $("#toast"); t.textContent = msg; t.style.display = "block";
+  clearTimeout(t._h); t._h = setTimeout(() => { t.style.display = "none"; }, ms);
+}
+function monthName(iso) {
+  return new Date(iso + "-01T12:00:00").toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+}
+
+/* ================= Auth ================= */
+async function boot() {
+  const { data } = await sb.auth.getSession();
+  setSession(data.session);
+  sb.auth.onAuthStateChange((_e, session) => setSession(session));
+}
+function setSession(session) {
+  S.session = session;
+  $("#login").style.display = session ? "none" : "block";
+  $("#app").style.display = session ? "block" : "none";
+  if (session) loadAll();
+}
+$("#li-btn").addEventListener("click", async () => {
+  $("#li-err").textContent = "";
+  $("#li-btn").disabled = true;
+  const { error } = await sb.auth.signInWithPassword({
+    email: $("#li-email").value.trim(), password: $("#li-pw").value,
+  });
+  $("#li-btn").disabled = false;
+  if (error) $("#li-err").textContent = error.message;
+});
+$("#li-pw").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#li-btn").click(); });
+$("#btn-logout").addEventListener("click", () => sb.auth.signOut());
+$("#btn-refresh").addEventListener("click", () => { loadAll(); toast("Refreshing..."); });
+
+/* ================= Data ================= */
+async function loadAll() {
+  const now = new Date();
+  const firstPrev = `${now.getFullYear()}-${pad2(now.getMonth())}-01`;
+  const since = now.getMonth() === 0 ? `${now.getFullYear() - 1}-12-01` : firstPrev;
+  const [cats, tx, bills, budgets, income] = await Promise.all([
+    sb.from("categories").select("*").order("sort_order"),
+    sb.from("transactions").select("*").gte("date", since).order("date", { ascending: false }),
+    sb.from("recurring_bills").select("*").eq("active", true),
+    sb.from("budgets").select("*"),
+    sb.from("income_schedule").select("*").eq("active", true),
+  ]);
+  const err = cats.error || tx.error || bills.error || budgets.error || income.error;
+  if (err) { toast("Load error: " + err.message, 5000); return; }
+  S.categories = cats.data; S.tx = tx.data; S.bills = bills.data;
+  S.budgets = budgets.data; S.income = income.data;
+  renderAll();
+}
+function renderAll() { renderOverview(); renderBudget(); renderForecast(); renderInsights(); renderAdd(); renderImport(); renderTheme(); }
+/* Transfers between own accounts are neutral: never spend, never income */
+const isSpendTx = (t) => Number(t.amount) < 0 && t.category !== "transfers";
+const isIncomeTx = (t) => Number(t.amount) > 0 && t.category !== "transfers";
+
+/* ================= Tabs ================= */
+document.querySelectorAll("nav button").forEach((b) => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll("nav button").forEach((x) => x.classList.toggle("active", x === b));
+    document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
+    $("#view-" + b.dataset.v).classList.add("active");
+  });
+});
+
+/* ================= Overview ================= */
+function sumBy(rows, pred) { return rows.filter(pred).reduce((a, r) => a + Number(r.amount), 0); }
+
+function renderOverview() {
+  const cur = monthOf(todayISO());
+  const prev = monthOf(addDays(cur + "-01", -1));
+  const spendCats = S.categories.filter((c) => c.id !== "income" && c.id !== "transfers");
+  const rows = spendCats.map((c) => {
+    const curNet = -sumBy(S.tx, (t) => t.category === c.id && monthOf(t.date) === cur);
+    const prevNet = -sumBy(S.tx, (t) => t.category === c.id && monthOf(t.date) === prev);
+    return { cat: c, cur: curNet, prev: prevNet };
+  }).filter((r) => r.cur !== 0 || r.prev !== 0)
+    .sort((a, b) => b.cur - a.cur);
+
+  const incomeCur = sumBy(S.tx, (t) => isIncomeTx(t) && monthOf(t.date) === cur);
+  const spendCur = -sumBy(S.tx, (t) => isSpendTx(t) && monthOf(t.date) === cur);
+
+  let html = `<div class="card"><h2>${esc(monthName(cur))}</h2>
+    <div class="totline"><span>Spent</span><span class="num neg">${fmt(spendCur)}</span></div>
+    <div class="totline"><span>Income</span><span class="num inc">${fmt(incomeCur)}</span></div>
+    <div class="totline"><span>Net</span><span class="num ${incomeCur - spendCur >= 0 ? "pos" : "neg"}">${fmt(incomeCur - spendCur)}</span></div>
+  </div>`;
+
+  html += `<div class="card"><h2>By category (vs ${esc(monthName(prev))})</h2>`;
+  if (!rows.length) html += `<div class="muted small">No transactions yet this month or last. Add one from the Add tab.</div>`;
+  for (const r of rows) {
+    let delta = "";
+    if (r.prev > 0 && r.cur > 0) {
+      const pct = Math.round(((r.cur - r.prev) / r.prev) * 100);
+      delta = pct >= 0 ? `<span class="delta-up">&#9650; ${pct}%</span>` : `<span class="delta-down">&#9660; ${-pct}%</span>`;
+    } else if (r.prev === 0 && r.cur > 0) delta = `<span class="sub">new</span>`;
+    else if (r.cur === 0 && r.prev > 0) delta = `<span class="sub">was ${fmt(r.prev)}</span>`;
+    html += `<div class="row"><span class="lbl">${esc(r.cat.label)}</span>${delta}<span class="num">${fmt(r.cur)}</span></div>`;
+  }
+  html += `</div>`;
+
+  const recent = S.tx.slice(0, 8);
+  html += `<div class="card"><h2>Recent</h2>`;
+  if (!recent.length) html += `<div class="muted small">Nothing yet.</div>`;
+  for (const t of recent) {
+    const a = Number(t.amount);
+    html += `<div class="row"><span class="lbl">${esc(t.note || catLabel(t.category))}<br><span class="sub">${esc(t.date)} · ${esc(catLabel(t.category))}</span></span>
+      <span class="num ${a < 0 ? "" : "inc"}">${fmt(a)}</span></div>`;
+  }
+  html += `</div>`;
+  $("#view-overview").innerHTML = html;
+}
+
+/* ================= Budget vs actual ================= */
+function currentTarget(catId) {
+  const today = todayISO();
+  const rows = S.budgets.filter((b) => b.category === catId && b.effective_from <= today)
+    .sort((a, b) => b.effective_from.localeCompare(a.effective_from));
+  return rows.length ? Number(rows[0].monthly_target) : null;
+}
+
+function renderBudget() {
+  const cur = monthOf(todayISO());
+  let html = `<div class="card"><h2>Budget vs actual · ${esc(monthName(cur))}</h2>`;
+  let any = false, overCount = 0;
+  for (const c of S.categories.filter((x) => x.id !== "income" && x.id !== "transfers")) {
+    const target = currentTarget(c.id);
+    if (target == null) continue;
+    any = true;
+    const spent = -sumBy(S.tx, (t) => t.category === c.id && monthOf(t.date) === cur && Number(t.amount) < 0);
+    const pct = target > 0 ? spent / target : (spent > 0 ? 2 : 0);
+    const cls = pct > 1 ? "over" : pct >= 0.8 ? "warn" : "ok";
+    if (cls === "over") overCount++;
+    const stateTxt = cls === "over" ? `OVER by ${fmt(spent - target)}` : cls === "warn" ? "near limit" : "on track";
+    html += `<div class="${cls}" style="padding:8px 0">
+      <div class="row" style="border:none;padding:0">
+        <span class="lbl">${esc(c.label)}</span>
+        <span class="state">${stateTxt}</span>
+        <span class="num small">${fmt(spent)} / ${fmt(target)}</span>
+      </div>
+      <div class="bar"><i style="width:${Math.min(100, Math.round(pct * 100))}%"></i></div>
+    </div>`;
+  }
+  if (!any) html += `<div class="muted small">No budget targets set yet. They are added through the Cowork project, not the dashboard.</div>`;
+  html += `</div>`;
+  if (overCount) html = `<div class="card over"><span class="state">${overCount} ${overCount === 1 ? "category" : "categories"} over budget</span></div>` + html;
+  $("#view-budget").innerHTML = html;
+}
+
+/* ================= Cash flow forecast ================= */
+function forecastEvents(days) {
+  const events = [];
+  let d = todayISO();
+  for (let i = 0; i < days; i++) {
+    const dt = new Date(d + "T12:00:00");
+    const dom = dt.getDate(), y = dt.getFullYear(), m = dt.getMonth() + 1;
+    const dim = daysInMonth(y, m);
+    const isoW = dt.getDay() === 0 ? 7 : dt.getDay();
+    for (const b of S.bills) {
+      const eff = b.due_day ? Math.min(b.due_day, dim) : null;
+      if ((b.frequency === "monthly" && eff === dom) ||
+          (b.frequency === "weekly" && b.due_day === isoW) ||
+          (b.frequency === "one_off" && b.due_date === d)) {
+        events.push({ date: d, name: b.name, amount: Number(b.amount), kind: "bill" });
+      }
+    }
+    for (const inc of S.income) {
+      const effDom = inc.day_of_month ? Math.min(inc.day_of_month, dim) : null;
+      const lwd = lastWorkingDay(y, m);
+      if ((effDom === dom) || (inc.rule && /last[_ ]?working/i.test(inc.rule) && d === lwd)) {
+        events.push({ date: d, name: inc.source, amount: Number(inc.expected_amount), kind: "income" });
+      }
+    }
+    d = addDays(d, 1);
+  }
+  return events;
+}
+
+function renderForecast() {
+  const days = Number(localStorage.getItem("et_days") || 30);
+  const bal0 = localStorage.getItem("et_balance") || "";
+  let html = `<div class="card"><h2>Cash flow forecast</h2>
+    <div class="grid2">
+      <div><label>Current balance (GBP)</label><input id="fc-bal" type="number" step="0.01" inputmode="decimal" value="${esc(bal0)}" placeholder="e.g. 1200"></div>
+      <div><label>Horizon</label><div class="seg">
+        <button id="fc-30" class="${days === 30 ? "sel-plain" : ""}">30 days</button>
+        <button id="fc-60" class="${days === 60 ? "sel-plain" : ""}">60 days</button>
+      </div></div>
+    </div>
+    <div class="sub" style="margin-top:8px">Balance is stored only on this device. "Last working day" rules ignore UK bank holidays.</div>
+  </div>`;
+
+  const events = forecastEvents(days);
+  if (!S.bills.length && !S.income.length) {
+    html += `<div class="card muted small">No recurring bills or income schedule entered yet, so there is nothing to forecast. These are populated through the Cowork project.</div>`;
+  } else {
+    let bal = parseFloat(bal0);
+    const haveBal = !isNaN(bal);
+    let minBal = bal, minDate = null;
+    let list = "";
+    for (const ev of events) {
+      if (haveBal) {
+        bal += ev.amount;
+        if (bal < minBal) { minBal = bal; minDate = ev.date; }
+      }
+      list += `<div class="row">
+        <span class="lbl">${esc(ev.name)}<br><span class="sub">${esc(ev.date)}</span></span>
+        <span class="num ${ev.kind === "income" ? "inc" : ""}">${fmt(ev.amount)}</span>
+        ${haveBal ? `<span class="num small ${bal < 0 ? "neg" : "muted"}">${fmt(bal)}</span>` : ""}
+      </div>`;
+    }
+    if (!events.length) list = `<div class="muted small">No scheduled bills or income fall inside this window.</div>`;
+    if (haveBal && minDate) {
+      const cls = minBal < 0 ? "over" : "ok";
+      html += `<div class="card ${cls}"><span class="state">Lowest point: ${fmt(minBal)} on ${minDate}</span>
+        ${minBal < 0 ? `<div class="small" style="margin-top:6px">Projected shortfall. An expected income lands after a bill is due.</div>` : ""}</div>`;
+    }
+    html += `<div class="card"><h2>Next ${days} days</h2>${list}</div>`;
+  }
+  $("#view-forecast").innerHTML = html;
+  $("#fc-bal").addEventListener("change", (e) => { localStorage.setItem("et_balance", e.target.value); renderForecast(); });
+  $("#fc-30").addEventListener("click", () => { localStorage.setItem("et_days", "30"); renderForecast(); });
+  $("#fc-60").addEventListener("click", () => { localStorage.setItem("et_days", "60"); renderForecast(); });
+}
+
+/* ================= Insights (deterministic, client side) ================= */
+function renderInsights() {
+  const cur = monthOf(todayISO());
+  const prev = monthOf(addDays(cur + "-01", -1));
+  const now = new Date();
+  const dayN = now.getDate();
+  const dimCur = daysInMonth(now.getFullYear(), now.getMonth() + 1);
+  const pd = new Date(cur + "-01T12:00:00"); pd.setDate(0);
+  const dimPrev = pd.getDate();
+
+  const txCur = S.tx.filter((t) => monthOf(t.date) === cur);
+  const spendCur = -sumBy(txCur, isSpendTx);
+  const spendPrev = -sumBy(S.tx, (t) => isSpendTx(t) && monthOf(t.date) === prev);
+  const incCur = sumBy(txCur, isIncomeTx);
+
+  if (!S.tx.length) {
+    $("#view-insights").innerHTML = `<div class="card"><h2>Insights</h2><div class="muted small">Not enough data yet. Insights appear once transactions accumulate.</div></div>`;
+    return;
+  }
+
+  const avgCur = dayN ? spendCur / dayN : 0;
+  const avgPrev = dimPrev ? spendPrev / dimPrev : 0;
+  const projected = avgCur * dimCur;
+  const savings = incCur > 0 ? (incCur - spendCur) / incCur : null;
+
+  /* fastest growing category, requires at least 20 GBP spent last month */
+  let growth = null;
+  for (const c of S.categories.filter((x) => x.id !== "income" && x.id !== "transfers")) {
+    const p = -sumBy(S.tx, (t) => isSpendTx(t) && t.category === c.id && monthOf(t.date) === prev);
+    const k = -sumBy(txCur, (t) => isSpendTx(t) && t.category === c.id);
+    if (p >= 20 && k > p) {
+      const pct = Math.round(((k - p) / p) * 100);
+      if (!growth || pct > growth.pct) growth = { label: c.label, pct, cur: k, prev: p };
+    }
+  }
+
+  const subsCur = -sumBy(txCur, (t) => isSpendTx(t) && t.category === "subscriptions");
+  const subsPrev = -sumBy(S.tx, (t) => isSpendTx(t) && t.category === "subscriptions" && monthOf(t.date) === prev);
+
+  let biggest = null;
+  for (const t of txCur) if (isSpendTx(t) && (!biggest || Number(t.amount) < Number(biggest.amount))) biggest = t;
+
+  const spendDays = new Set(txCur.filter(isSpendTx).map((t) => t.date));
+  const noSpend = dayN - spendDays.size;
+
+  /* forecast crunch reuse */
+  let crunch = "";
+  const bal0 = parseFloat(localStorage.getItem("et_balance") || "");
+  if (!isNaN(bal0) && (S.bills.length || S.income.length)) {
+    let bal = bal0, minBal = bal0, minDate = null;
+    for (const ev of forecastEvents(30)) {
+      bal += ev.amount;
+      if (bal < minBal) { minBal = bal; minDate = ev.date; }
+    }
+    if (minDate) crunch = `<div class="totline"><span>Lowest projected balance (30d)</span><span class="num ${minBal < 0 ? "neg" : ""}">${fmt(minBal)}</span></div><div class="sub">on ${esc(minDate)}${minBal < 0 ? ". Consider moving a bill date or keeping a buffer." : ""}</div>`;
+  }
+
+  let html = `<div class="card"><h2>This month so far</h2>
+    ${savings != null ? `<div class="totline"><span>Savings rate</span><span class="num ${savings >= 0 ? "pos" : "neg"}">${Math.round(savings * 100)}%</span></div><div class="sub">share of income not spent</div>` : `<div class="sub">No income recorded yet this month, savings rate unavailable.</div>`}
+    <div class="totline"><span>Average daily spend</span><span class="num">${fmt(avgCur)}</span></div>
+    <div class="sub">last month averaged ${fmt(avgPrev)} per day</div>
+    <div class="totline"><span>Projected month-end spend</span><span class="num">${fmt(projected)}</span></div>
+    <div class="sub">if the current pace holds</div>
+  </div>
+  <div class="card"><h2>Patterns</h2>
+    ${growth ? `<div class="totline"><span>Fastest growing: ${esc(growth.label)}</span><span class="num neg">+${growth.pct}%</span></div><div class="sub">${fmt(growth.prev)} last month, ${fmt(growth.cur)} so far this month</div>` : `<div class="sub">No category is growing versus last month yet.</div>`}
+    ${biggest ? `<div class="totline"><span>Biggest single expense</span><span class="num">${fmt(Number(biggest.amount))}</span></div><div class="sub">${esc(biggest.note || catLabel(biggest.category))} on ${esc(biggest.date)}</div>` : ""}
+    <div class="totline"><span>No-spend days</span><span class="num">${noSpend} of ${dayN}</span></div>
+    <div class="totline"><span>Subscriptions</span><span class="num">${fmt(subsCur)}</span></div>
+    <div class="sub">${subsPrev ? `${fmt(subsPrev)} last month` : "none recorded last month"}</div>
+  </div>
+  ${crunch ? `<div class="card"><h2>Cash flow</h2>${crunch}</div>` : ""}
+  <div class="card"><div class="sub">Pattern analysis of your own data, computed on this device. Informational only, not financial advice. A fuller narrative review happens monthly through the Cowork project.</div></div>`;
+  $("#view-insights").innerHTML = html;
+}
+
+/* ================= Quick add ================= */
+let addType = "spend";
+function renderAdd() {
+  const cats = S.categories.filter((c) => (addType === "income" ? (c.id === "income" || c.id === "transfers") : c.id !== "income"));
+  const accounts = JSON.parse(localStorage.getItem("et_accounts") || "[]");
+  $("#view-add").innerHTML = `<div class="card"><h2>Quick add</h2>
+    <div class="seg" style="margin-top:4px">
+      <button id="ad-spend" class="${addType === "spend" ? "sel-spend" : ""}">Spend</button>
+      <button id="ad-income" class="${addType === "income" ? "sel-income" : ""}">Income</button>
+    </div>
+    <div class="grid2">
+      <div><label>Date</label><input id="ad-date" type="date" value="${todayISO()}"></div>
+      <div><label>Amount (GBP)</label><input id="ad-amt" type="number" step="0.01" min="0" inputmode="decimal" placeholder="0.00"></div>
+    </div>
+    <label>Category</label>
+    <select id="ad-cat">${cats.map((c) => `<option value="${esc(c.id)}">${esc(c.label)}</option>`).join("")}</select>
+    <label>Account</label>
+    <input id="ad-acc" list="acc-list" placeholder="e.g. current account">
+    <datalist id="acc-list">${accounts.map((a) => `<option value="${esc(a)}">`).join("")}</datalist>
+    <label>Note (optional)</label>
+    <input id="ad-note" type="text" placeholder="what was it?">
+    <button class="btn" id="ad-save">Save</button>
+  </div>`;
+  $("#ad-spend").addEventListener("click", () => { addType = "spend"; renderAdd(); });
+  $("#ad-income").addEventListener("click", () => { addType = "income"; renderAdd(); });
+  $("#ad-save").addEventListener("click", saveQuickAdd);
+}
+async function saveQuickAdd() {
+  const amt = Math.abs(parseFloat($("#ad-amt").value));
+  if (!amt || isNaN(amt)) { toast("Enter an amount"); return; }
+  const row = {
+    date: $("#ad-date").value,
+    amount: addType === "spend" ? -amt : amt,
+    category: $("#ad-cat").value,
+    account: $("#ad-acc").value.trim() || null,
+    source: "manual",
+    note: $("#ad-note").value.trim() || null,
+  };
+  $("#ad-save").disabled = true;
+  const { data, error } = await sb.from("transactions").insert(row).select();
+  $("#ad-save").disabled = false;
+  if (error) { toast("Save failed: " + error.message, 5000); return; }
+  if (row.account) {
+    const accs = JSON.parse(localStorage.getItem("et_accounts") || "[]");
+    if (!accs.includes(row.account)) { accs.push(row.account); localStorage.setItem("et_accounts", JSON.stringify(accs)); }
+  }
+  S.tx.unshift(data[0]);
+  S.tx.sort((a, b) => b.date.localeCompare(a.date));
+  toast(`Saved ${fmt(row.amount)} · ${catLabel(row.category)}`);
+  renderOverview(); renderBudget(); renderAdd();
+}
+
+/* ================= CSV import ================= */
+/* Keyword rules for category guessing. Edit and extend freely; matching is
+   case-insensitive on the description text. */
+const KEYWORD_RULES = [
+  [/tesco|sainsbury|asda|aldi|lidl|morrisons|waitrose|co-?op|iceland/i, "groceries"],
+  [/tfl|oyster|trainline|national rail|uber|bolt|citymapper|lime|santander cycles/i, "transport"],
+  [/netflix|spotify|disney|prime|youtube|icloud|apple\.com\/bill|google storage|patreon/i, "subscriptions"],
+  [/rent|landlord|letting/i, "housing_and_bills"],
+  [/edf|octopus|british gas|eon|e\.on|ovo|thames water|council tax|virgin media|bt group|vodafone|o2|giffgaff|three/i, "housing_and_bills"],
+  [/judo|gym|puregym|fitness|sport/i, "judo_and_fitness"],
+  [/boots|superdrug|barber|haircut|pharmacy/i, "personal_care"],
+  [/deliveroo|just ?eat|uber ?eats|pret|greggs|nando|pizza|restaurant|cafe|coffee|costa|starbucks|pub |wetherspoon/i, "eating_and_going_out"],
+  [/etsy|prusa|elegoo|filament|ebay.*(fee|selling)/i, "side_income_costs"],
+  [/salary|ucl|payroll|stipend/i, "income"],
+  [/revolut|top ?up/i, "transfers"],
+];
+function guessCategory(desc, amount) {
+  if (amount > 0) {
+    for (const [re, cat] of KEYWORD_RULES) if (cat === "transfers" && re.test(desc)) return "transfers";
+    return "income";
+  }
+  for (const [re, cat] of KEYWORD_RULES) if (re.test(desc)) return cat;
+  return "miscellaneous";
+}
+function parseAnyDate(s) {
+  s = String(s || "").trim();
+  let m;
+  if ((m = s.match(/^(\d{4})-(\d{2})-(\d{2})/))) return `${m[1]}-${m[2]}-${m[3]}`;
+  if ((m = s.match(/^(\d{1,2})[\/.](\d{1,2})[\/.](\d{4})/))) return `${m[3]}-${pad2(m[2])}-${pad2(m[1])}`; /* UK day first */
+  if ((m = s.match(/^(\d{1,2})[\/.](\d{1,2})[\/.](\d{2})$/))) return `20${m[3]}-${pad2(m[2])}-${pad2(m[1])}`;
+  const months = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12 };
+  if ((m = s.match(/^(\d{1,2})\s+([A-Za-z]{3})[A-Za-z]*\s+(\d{4})/))) {
+    const mo = months[m[2].toLowerCase().slice(0,3)];
+    if (mo) return `${m[3]}-${pad2(mo)}-${pad2(m[1])}`;
+  }
+  return null;
+}
+const normDesc = (s) => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
+
+let IMP = null; /* { headers, rows } after parse */
+
+function renderImport() {
+  $("#view-import").innerHTML = `<div class="card"><h2>CSV import</h2>
+    <div class="sub" style="margin-bottom:8px">Upload a bank statement export. You will see a preview with guessed columns and categories, can correct both, and duplicates are checked before anything is written.</div>
+    <input id="im-file" type="file" accept=".csv,text/csv">
+  </div>
+  <div id="im-stage"></div>`;
+  $("#im-file").addEventListener("change", (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    Papa.parse(f, {
+      header: true, skipEmptyLines: true,
+      complete: (res) => {
+        if (!res.data.length) { toast("No rows found in that file"); return; }
+        IMP = { headers: res.meta.fields, rows: res.data };
+        renderMapping();
+      },
+      error: (err) => toast("Could not parse file: " + err.message, 5000),
+    });
+  });
+}
+
+function guessCol(headers, res) { return headers.find((h) => res.test(h)) || ""; }
+
+function renderMapping() {
+  const H = IMP.headers;
+  const opt = (sel) => `<option value="">(none)</option>` + H.map((h) => `<option ${h === sel ? "selected" : ""} value="${esc(h)}">${esc(h)}</option>`).join("");
+  const gDate = guessCol(H, /date/i);
+  const gAmt = guessCol(H, /^amount$|amount|value/i);
+  const gDesc = guessCol(H, /desc|narrat|detail|reference|merchant|name|memo/i);
+  const gDebit = guessCol(H, /debit|paid out|money out|out\b/i);
+  const gCredit = guessCol(H, /credit|paid in|money in|in\b/i);
+  const dualLikely = !gAmt && gDebit && gCredit;
+  $("#im-stage").innerHTML = `<div class="card"><h2>Column mapping (guessed, correct if wrong)</h2>
+    <label>Date column</label><select id="mp-date">${opt(gDate)}</select>
+    <label>Description column</label><select id="mp-desc">${opt(gDesc)}</select>
+    <label>Amount style</label>
+    <div class="seg">
+      <button id="mp-single" class="${dualLikely ? "" : "sel-plain"}">One amount column</button>
+      <button id="mp-dual" class="${dualLikely ? "sel-plain" : ""}">Separate debit / credit</button>
+    </div>
+    <div id="mp-singlebox" style="${dualLikely ? "display:none" : ""}">
+      <label>Amount column</label><select id="mp-amt">${opt(gAmt)}</select>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:10px">
+        <input type="checkbox" id="mp-flip" style="width:auto"> Flip signs (tick if spending shows as positive)
+      </label>
+    </div>
+    <div id="mp-dualbox" style="${dualLikely ? "" : "display:none"}">
+      <label>Debit column (money out)</label><select id="mp-debit">${opt(gDebit)}</select>
+      <label>Credit column (money in)</label><select id="mp-credit">${opt(gCredit)}</select>
+    </div>
+    <label>Account name for these rows</label>
+    <input id="mp-acc" placeholder="e.g. current account">
+    <button class="btn" id="mp-next">Preview</button>
+  </div>`;
+  let dual = dualLikely;
+  $("#mp-single").addEventListener("click", () => { dual = false; $("#mp-single").classList.add("sel-plain"); $("#mp-dual").classList.remove("sel-plain"); $("#mp-singlebox").style.display = ""; $("#mp-dualbox").style.display = "none"; });
+  $("#mp-dual").addEventListener("click", () => { dual = true; $("#mp-dual").classList.add("sel-plain"); $("#mp-single").classList.remove("sel-plain"); $("#mp-singlebox").style.display = "none"; $("#mp-dualbox").style.display = ""; });
+  $("#mp-next").addEventListener("click", () => buildPreview(dual));
+}
+
+async function buildPreview(dual) {
+  const cDate = $("#mp-date").value, cDesc = $("#mp-desc").value;
+  if (!cDate) { toast("Pick the date column"); return; }
+  const flip = !dual && $("#mp-flip").checked;
+  const acc = $("#mp-acc").value.trim() || null;
+  const parsed = [];
+  const problems = [];
+  for (const r of IMP.rows) {
+    const iso = parseAnyDate(r[cDate]);
+    let amt = null;
+    if (dual) {
+      const dRaw = parseFloat(String(r[$("#mp-debit").value] || "").replace(/[£,]/g, ""));
+      const cRaw = parseFloat(String(r[$("#mp-credit").value] || "").replace(/[£,]/g, ""));
+      if (!isNaN(dRaw) && dRaw !== 0) amt = -Math.abs(dRaw);
+      else if (!isNaN(cRaw) && cRaw !== 0) amt = Math.abs(cRaw);
+    } else {
+      const v = parseFloat(String(r[$("#mp-amt").value] || "").replace(/[£,]/g, ""));
+      if (!isNaN(v)) amt = flip ? -v : v;
+    }
+    const desc = cDesc ? String(r[cDesc] || "").trim() : "";
+    if (!iso || amt === null) { problems.push(r); continue; }
+    parsed.push({ date: iso, amount: Math.round(amt * 100) / 100, note: desc, account: acc, category: guessCategory(desc, amt), include: true, dupe: false });
+  }
+  if (!parsed.length) { toast("No usable rows. Check the column mapping.", 5000); return; }
+  /* duplicate check against existing rows in the same date range, matching date + amount + description */
+  const dates = parsed.map((p) => p.date).sort();
+  const { data: existing, error } = await sb.from("transactions")
+    .select("date,amount,note").gte("date", dates[0]).lte("date", dates[dates.length - 1]);
+  if (error) { toast("Duplicate check failed: " + error.message, 5000); return; }
+  const seen = new Set(existing.map((t) => `${t.date}|${Number(t.amount).toFixed(2)}|${normDesc(t.note)}`));
+  const inFile = new Set();
+  for (const p of parsed) {
+    const k = `${p.date}|${p.amount.toFixed(2)}|${normDesc(p.note)}`;
+    if (seen.has(k) || inFile.has(k)) { p.dupe = true; p.include = false; }
+    inFile.add(k);
+  }
+  IMP.parsed = parsed;
+  const catOpts = (sel) => S.categories.map((c) => `<option ${c.id === sel ? "selected" : ""} value="${esc(c.id)}">${esc(c.label)}</option>`).join("");
+  const dupes = parsed.filter((p) => p.dupe).length;
+  let rowsHtml = parsed.map((p, i) => `<tr>
+    <td><input type="checkbox" data-i="${i}" class="im-inc" ${p.include ? "checked" : ""} style="width:auto"></td>
+    <td class="num">${esc(p.date)}</td>
+    <td>${esc(p.note.slice(0, 40))}${p.dupe ? `<br><span class="dupe">likely duplicate</span>` : ""}</td>
+    <td class="num ${p.amount < 0 ? "" : "inc"}">${fmt(p.amount)}</td>
+    <td><select data-i="${i}" class="im-cat">${catOpts(p.category)}</select></td>
+  </tr>`).join("");
+  $("#im-stage").innerHTML = `<div class="card"><h2>Preview · ${parsed.length} rows${problems.length ? ` · ${problems.length} skipped (unreadable)` : ""}${dupes ? ` · ${dupes} likely duplicates unticked` : ""}</h2>
+    <div class="scrollx"><table class="tbl">
+      <tr><th></th><th>Date</th><th>Description</th><th>Amount</th><th>Category</th></tr>
+      ${rowsHtml}
+    </table></div>
+    <button class="btn" id="im-go"></button>
+    <button class="btn secondary" id="im-back">Back to mapping</button>
+  </div>`;
+  const updateBtn = () => { const n = IMP.parsed.filter((p) => p.include).length; $("#im-go").textContent = `Import ${n} row${n === 1 ? "" : "s"}`; $("#im-go").disabled = !n; };
+  updateBtn();
+  document.querySelectorAll(".im-inc").forEach((cb) => cb.addEventListener("change", (e) => { IMP.parsed[e.target.dataset.i].include = e.target.checked; updateBtn(); }));
+  document.querySelectorAll(".im-cat").forEach((s) => s.addEventListener("change", (e) => { IMP.parsed[e.target.dataset.i].category = e.target.value; }));
+  $("#im-back").addEventListener("click", renderMapping);
+  $("#im-go").addEventListener("click", doImport);
+}
+
+async function doImport() {
+  const rows = IMP.parsed.filter((p) => p.include).map((p) => ({
+    date: p.date, amount: p.amount, category: p.category,
+    account: p.account, source: "csv_import", note: p.note || null,
+  }));
+  if (!rows.length) return;
+  $("#im-go").disabled = true;
+  const { error } = await sb.from("transactions").insert(rows);
+  if (error) { toast("Import failed: " + error.message, 6000); $("#im-go").disabled = false; return; }
+  toast(`Imported ${rows.length} transactions`);
+  IMP = null;
+  await loadAll();
+  document.querySelector('nav button[data-v="overview"]').click();
+}
+
+/* ================= Appearance ================= */
+const PALETTES = [
+  { id: "teal",   label: "Teal (default)", accent: "#4fd1c5" },
+  { id: "ocean",  label: "Ocean blue",     accent: "#5aa7f0" },
+  { id: "violet", label: "Violet",         accent: "#a78bfa" },
+  { id: "ember",  label: "Ember",          accent: "#f09d52" },
+];
+const sysDark = window.matchMedia("(prefers-color-scheme: dark)");
+function applyAppearance() {
+  const mode = localStorage.getItem("et_mode") || "system";
+  const pal = localStorage.getItem("et_palette") || "teal";
+  const dark = mode === "system" ? sysDark.matches : mode === "dark";
+  document.documentElement.setAttribute("data-mode", dark ? "dark" : "light");
+  if (pal === "teal") document.documentElement.removeAttribute("data-palette");
+  else document.documentElement.setAttribute("data-palette", pal);
+}
+sysDark.addEventListener("change", applyAppearance);
+applyAppearance();
+
+function renderTheme() {
+  const mode = localStorage.getItem("et_mode") || "system";
+  const pal = localStorage.getItem("et_palette") || "teal";
+  $("#view-theme").innerHTML = `<div class="card"><h2>Mode</h2>
+    <div class="seg">
+      <button data-m="dark" class="${mode === "dark" ? "sel-plain" : ""}">Dark</button>
+      <button data-m="light" class="${mode === "light" ? "sel-plain" : ""}">Light</button>
+      <button data-m="system" class="${mode === "system" ? "sel-plain" : ""}">System</button>
+    </div>
+    <div class="sub" style="margin-top:8px">System follows your device setting. Saved on this device only.</div>
+  </div>
+  <div class="card"><h2>Accent palette</h2>
+    ${PALETTES.map((p) => `<button class="swatch ${p.id === pal ? "sel" : ""}" data-p="${p.id}"><i style="background:${p.accent}"></i>${esc(p.label)}</button>`).join("")}
+  </div>`;
+  document.querySelectorAll("#view-theme .seg button").forEach((b) => b.addEventListener("click", () => {
+    localStorage.setItem("et_mode", b.dataset.m); applyAppearance(); renderTheme();
+  }));
+  document.querySelectorAll("#view-theme .swatch").forEach((b) => b.addEventListener("click", () => {
+    localStorage.setItem("et_palette", b.dataset.p); applyAppearance(); renderTheme();
+  }));
+}
+
+/* ================= Boot ================= */
+renderTheme();
+boot();
+</script>
+</body>
+</html>
